@@ -1,0 +1,148 @@
+<?php
+// $id$
+
+/**
+ * Implement hook_form_alter().
+ */
+function group_terms_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'field_ui_field_edit_form'
+    && $form['#field']['type'] == 'taxonomy_term_reference'
+    && $form['#instance']['widget']['module'] == 'options'
+  ) {
+    $terms_field = variable_get(
+      'group_terms_'. $form['#instance']['entity_type']
+      .'_'. $form['#instance']['bundle'] .'_field_name',
+      array('id' => FALSE)
+    );
+    $form['field']['group_terms_active'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Filter options'),
+      '#description' => t('Show only terms with are selected in parent node.'),
+      '#default_value' => $terms_field['id'] == $form['#field']['id'],
+    );
+    $form['#submit'][] = 'group_terms_settings_submit';
+  }
+  if (isset($form['#entity_type'])
+    && isset($form['#bundle'])
+    && isset($form[OG_AUDIENCE_FIELD])
+  ) { // Now it works only for OG
+    $parent_field =& $form[OG_AUDIENCE_FIELD][$form[OG_AUDIENCE_FIELD]['#language']]; // TODO: Make settings
+    $terms_field_settings = variable_get(
+      'group_terms_'. $form['#entity_type']
+      .'_'. $form['#bundle'] .'_field_name',
+      array('id' => FALSE, 'name' => FALSE)
+    );
+    $field_name = $terms_field_settings['name'];
+    $field_options = array();
+
+    if ($field_name && $parent_field['#type']
+      && isset($form[$field_name][$form[$field_name]['#language']]['#options'])
+    ) {
+      // set field
+      $terms_field =& $form[$field_name][$form[$field_name]['#language']];
+      // << SECTION: Add ajax behavior to pareng field and set terms field name
+      $parent_field['#ajax'] = array(
+        'callback' => 'group_terms_parent_ajax',
+        'wrapper' => 'group-terms-field-wrapper',
+        'event' => 'change',
+      );
+      $form['group_terms_field_name'] = array(
+        '#type' => 'value',
+        '#value' => $field_name
+      );
+      // >>
+
+      // << SECTION: Get default values
+      $default_values = array();
+      // check form_state
+      if (isset($form_state['values'][OG_AUDIENCE_FIELD])) {
+        // data structure is: array(N => array('gid' => N))
+        $values = $form_state['values'][OG_AUDIENCE_FIELD][$parent_field['#language']];
+        foreach ($values as $value) {
+          if (intval($value['gid'])) { // if gid is positive, then its ok
+            $default_values[] = $value['gid'];
+          }
+        }
+      }
+      else {
+        // Required & single value select field could have selected option,
+        // while there is no data in #default_values, so fix it by setting
+        // first available option as default
+        if ($parent_field['#required'] && !$parent_field['#multiple'] && $parent_field['#type'] == 'select') {
+          foreach ($parent_field['#options'] as $key => $option) {
+            if (is_array($option) && !empty($option)) {
+              $value = key($option);
+              $parent_field['#default_value'][$value] = $value;
+              break; // we need only one default value
+            }
+          }
+        }
+        // data structure is: array(N => N)
+        $default_values = array_values($parent_field['#default_value']);
+      }
+      // >>
+
+      // << SECTION: Get available values
+      if ($selected_groups = og_load_multiple($default_values)) {
+        foreach ($selected_groups as $group) {
+          if ($entity = reset(entity_load($group->entity_type, array($group->etid)))) {
+            if (!isset($entity->$field_name)) continue;
+            foreach (reset($entity->$field_name) as $value) {
+              $value = reset($value);
+              $field_options[$value] = $value;
+            }
+          }
+        }
+      }
+      // >>
+
+      // << SECTION: Set available values
+      $form[$field_name]['#prefix'] = '<div id="group-terms-field-wrapper">';
+      $form[$field_name]['#suffix'] = '</div>';
+      // Set options
+      if ($field_options) {
+        $terms_field['#options'] = array_intersect_key(
+          $terms_field['#options'],
+          $field_options
+        );
+        // Cut off not available values from #default_values
+        $terms_field['#default_value'] = array_intersect(
+          $terms_field['#default_value'],
+          $field_options
+        );
+      }
+      else {
+        $terms_field = array(
+          '#type' => 'item',
+          '#title' => $terms_field['#title'],
+          '#markup' => t('Please select category to get terms'),
+        );
+      }
+      // TODO: Maybe there should be an empty text?
+      // >>
+
+    }
+  }
+}
+
+/**
+ * Save field settings.
+ */
+function group_terms_settings_submit($form, &$form_state) {
+  if ($form_state['values']['field']['group_terms_active']) {
+    variable_set(
+      'group_terms_'. $form['#instance']['entity_type']
+      .'_'. $form['#instance']['bundle'] .'_field_name', array(
+        'id' => $form['#instance']['field_id'],
+        'name' => $form['#instance']['field_name']
+      )
+    );
+  }
+}
+
+/**
+ * Ajax Callback for group audience field.
+ */
+function group_terms_parent_ajax($form, $form_state) {
+  return $form[$form_state['values']['group_terms_field_name']];
+}
